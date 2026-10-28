@@ -63,6 +63,67 @@
             <div id="em_review" class="em-status em-muted"></div>
             <div id="em_replycheck" class="em-status em-muted"></div>
 
+            <h4>🌐 Перевод</h4>
+            <label class="checkbox_label">
+                <input id="em_tr_enabled" type="checkbox" data-em-key="translateEnabled">
+                <span>Контекстный перевод через LLM</span>
+            </label>
+            <small class="em-muted">Ролевая идёт на языке истории, а вы читаете и пишете на своём. В промпт всегда уходит оригинал. Встроенный автоперевод Translate при этом выключите.</small>
+            <label for="em_translator_profile">Модель-переводчик (пусто = служебная):</label>
+            <select id="em_translator_profile" class="text_pole"></select>
+            <div class="em-grid">
+                <label>Мой язык
+                    <input type="text" class="text_pole" data-em-key="translateTarget">
+                </label>
+                <label>Язык истории
+                    <input type="text" class="text_pole" data-em-key="translateInternal">
+                </label>
+                <label>Сообщений контекста для переводчика
+                    <input type="number" min="0" max="10" class="text_pole" data-em-key="translateContext">
+                </label>
+            </div>
+            <label class="checkbox_label">
+                <input type="checkbox" data-em-key="translateIncoming">
+                <span>Переводить ответы персонажей</span>
+            </label>
+            <label class="checkbox_label">
+                <input type="checkbox" data-em-key="translateOutgoing">
+                <span>Переводить мои сообщения на язык истории (если написаны кириллицей)</span>
+            </label>
+            <label class="checkbox_label">
+                <input type="checkbox" data-em-key="translateImpersonate">
+                <span>Переводить текст имперсонации в поле ввода</span>
+            </label>
+            <label class="checkbox_label">
+                <input type="checkbox" data-em-key="translateVtk">
+                <span>Переводить текст внутри визуальных вставок (VTK)</span>
+            </label>
+            <details>
+                <summary>Глоссарий</summary>
+                <small class="em-muted">По строке на термин: <code>Original = Перевод</code>. Общий — для всех чатов, чатовый — только для этого.</small>
+                <label>Общий глоссарий</label>
+                <textarea class="text_pole textarea_compact" rows="4" data-em-key="glossary" placeholder="Ironhold = Железный Оплот"></textarea>
+                <label for="em_chat_glossary">Глоссарий этого чата</label>
+                <textarea id="em_chat_glossary" class="text_pole textarea_compact" rows="4" placeholder="Mara = Мара"></textarea>
+            </details>
+            <div class="em-buttons">
+                <div id="em_retranslate" class="menu_button">Перевести последнее заново</div>
+            </div>
+            <small class="em-muted">На каждом сообщении появится кнопка 🌐 — переключает перевод и оригинал.</small>
+
+            <h4>📜 Пересказ</h4>
+            <div class="em-buttons">
+                <div id="em_recap" class="menu_button">Где мы остановились?</div>
+            </div>
+            <div class="em-grid">
+                <label>Показывать при открытии чата после паузы (часов, 0 — выкл.)
+                    <input type="number" min="0" max="720" class="text_pole" data-em-key="recapOnOpenHours">
+                </label>
+                <label>Слов в пересказе
+                    <input type="number" min="50" max="500" class="text_pole" data-em-key="recapWords">
+                </label>
+            </div>
+
             <h4>Карточка состояния <small class="em-muted">(можно править)</small></h4>
             <textarea id="em_state" class="text_pole textarea_compact" rows="8" placeholder="Появится после первых сообщений…"></textarea>
 
@@ -99,6 +160,9 @@
                     </label>
                     <label>Блоков за один ход (авто)
                         <input type="number" min="1" max="20" class="text_pole" data-em-key="maxChunksPerRun">
+                    </label>
+                    <label>Макс. токенов перевода
+                        <input type="number" min="300" max="8000" class="text_pole" data-em-key="translateMaxTokens">
                     </label>
                     <label>Сообщений для карточки, максимум
                         <input type="number" min="5" max="200" class="text_pole" data-em-key="stateMaxMessages">

@@ -14,6 +14,11 @@
  * поэтому оно меньше ломается при обновлениях.
  */
 
+import {
+    TRANSLATE_PROMPTS, hashText, hasCyrillic, maskProtected, unmaskProtected,
+    cleanTranslation, mergeGlossary, buildContextPairs, escapeHtml,
+} from './translate.js';
+
 export const MODULE = 'elephant_memory';
 const KEY_LONGTERM = 'elephant_memory_longterm';
 const KEY_STATE = 'elephant_memory_state';
@@ -148,6 +153,8 @@ New reply from {{char}}:
 Does the new reply HARD-contradict the state card or the messages? Hard contradictions: a character acts who is absent or dead, the wrong location, a forgotten injury, item or established fact that breaks continuity, a relationship that is suddenly different without reason.
 New details that do not conflict are fine. Ignore style and quality.
 Answer exactly OK, or one line: CONTRADICTION: <short explanation in the language of the roleplay>`,
+
+    ...TRANSLATE_PROMPTS,
 };
 
 export const DEFAULT_SETTINGS = {
@@ -170,6 +177,21 @@ export const DEFAULT_SETTINGS = {
     maxRetries: 1,
     stateDepth: 4,
     waitMs: 30000,
+    // Перевод
+    translateEnabled: false,
+    translatorProfile: '',
+    translateTarget: 'Russian',
+    translateInternal: 'English',
+    translateIncoming: true,
+    translateOutgoing: true,
+    translateImpersonate: true,
+    translateContext: 2,
+    translateVtk: true,
+    translateMaxTokens: 3000,
+    glossary: '',
+    // Пересказ
+    recapWords: 150,
+    recapOnOpenHours: 0,
     prompts: { ...DEFAULT_PROMPTS },
 };
 
@@ -185,6 +207,7 @@ export function emptyData() {
         warnedBacklog: false,
         lastReview: '',
         lastReplyCheck: '',
+        glossary: '',
     };
 }
 
@@ -373,18 +396,23 @@ function subst(text) {
     return typeof c.substituteParams === 'function' ? c.substituteParams(text) : text;
 }
 
-/** Вызов дешёвой модели. role: 'helper' | 'critic'. */
-async function callModel(systemText, userText, role = 'helper') {
+const truncationWarned = new Set();
+
+/** Вызов дешёвой модели. role: 'helper' | 'critic' | 'translator'. */
+async function callModel(systemText, userText, role = 'helper', maxTokensOverride = null) {
     const s = settings();
     const c = ctx();
-    const profileId = role === 'critic' ? (s.criticProfile || s.helperProfile) : s.helperProfile;
+    const profileId = role === 'critic' ? (s.criticProfile || s.helperProfile)
+        : role === 'translator' ? (s.translatorProfile || s.helperProfile)
+            : s.helperProfile;
+    const maxTokens = Number(maxTokensOverride ?? s.helperMaxTokens);
     const messages = [
         { role: 'system', content: subst(systemText) },
         { role: 'user', content: subst(userText) },
     ];
     let out;
     if (profileId && c.ConnectionManagerRequestService) {
-        const res = await c.ConnectionManagerRequestService.sendRequest(profileId, messages, Number(s.helperMaxTokens), {
+        const res = await c.ConnectionManagerRequestService.sendRequest(profileId, messages, maxTokens, {
             stream: false,
             extractData: true,
             includePreset: false,
@@ -392,9 +420,26 @@ async function callModel(systemText, userText, role = 'helper') {
         });
         out = typeof res === 'string' ? res : res?.content;
     } else {
-        out = await c.generateRaw({ prompt: messages, responseLength: Number(s.helperMaxTokens) });
+        out = await c.generateRaw({ prompt: messages, responseLength: maxTokens });
     }
-    return cleanText(out);
+    out = cleanText(out);
+    warnIfTruncated(out, maxTokens, role);
+    return out;
+}
+
+/** Предупреждает, если ответ служебной модели, похоже, упёрся в лимит токенов. */
+async function warnIfTruncated(text, maxTokens, role) {
+    try {
+        const c = ctx();
+        if (!text || truncationWarned.has(role) || typeof c.getTokenCountAsync !== 'function') return;
+        const n = await c.getTokenCountAsync(text);
+        if (n < maxTokens * 0.95) return;
+        truncationWarned.add(role);
+        const where = role === 'translator' ? '«Макс. токенов перевода»' : '«Макс. токенов ответа служебной модели»';
+        toast().warning(`Ответ служебной модели (~${n} ток.) упёрся в лимит и, вероятно, обрезан. Увеличьте ${where} в продвинутых настройках.`, 'Elephant Memory', { timeOut: 20000 });
+    } catch (e) {
+        console.debug('[Elephant Memory] token count', e);
+    }
 }
 
 function chatStillSame(chatId) {
@@ -593,9 +638,239 @@ async function checkReply(mesId) {
         retries.set(key, used + 1);
         toast().info(`Противоречие: ${res.reason}. Перегенерирую ответ.`, 'Рыбка');
         await c.swipe?.right?.(null, { source: 'auto_swipe' });
+        return true;
     } else {
         toast().warning(res.reason, 'Рыбка: возможное противоречие', { timeOut: 15000 });
     }
+}
+
+// ---------------------------------------------------------------------------
+// Контекстный перевод
+// ---------------------------------------------------------------------------
+
+const translating = new Set();
+
+function glossaryText() {
+    const s = settings();
+    return mergeGlossary(getData()?.glossary, s.glossary) || '(none)';
+}
+
+function isPlaceholderText(mes) {
+    const t = String(mes ?? '').trim();
+    return !t || t === '...';
+}
+
+function refreshMessage(idx) {
+    const c = ctx();
+    const m = c.chat[idx];
+    if (m && typeof c.updateMessageBlock === 'function') c.updateMessageBlock(idx, m);
+}
+
+/** Переводит сообщение для показа (оригинал остаётся в промпте). */
+export async function translateForDisplay(idx, { force = false } = {}) {
+    const s = settings();
+    const c = ctx();
+    const chat = c.chat;
+    const m = chat?.[idx];
+    if (!m || m.is_system || isPlaceholderText(m.mes)) return false;
+    if (typeof m.extra !== 'object' || !m.extra) m.extra = {};
+
+    const src = hashText(m.mes);
+    if (!force && m.extra.em_tr?.src === src) {
+        if (m.extra.display_text !== m.extra.em_tr.text) {
+            m.extra.display_text = m.extra.em_tr.text;
+            refreshMessage(idx);
+        }
+        return true;
+    }
+
+    const key = `${c.getCurrentChatId?.()}:${idx}:${src}`;
+    if (translating.has(key)) return false;
+    translating.add(key);
+    try {
+        const chatId = c.getCurrentChatId?.();
+        const { masked, parts } = maskProtected(m.mes, { maskVtk: !s.translateVtk });
+        const nm = names();
+        const speaker = m.name || (m.is_user ? nm.user : nm.char);
+        const raw = await callModel(s.prompts.translator_system, fillTemplate(s.prompts.translate_display, {
+            glossary: glossaryText(),
+            state: getData()?.state || '(none)',
+            context: buildContextPairs(chat, idx, Number(s.translateContext), nm) || '(none)',
+            speaker,
+            target: s.translateTarget,
+            text: masked,
+        }), 'translator', s.translateMaxTokens);
+        const out = cleanTranslation(raw);
+        // Чат сменился или сообщение изменилось, пока шёл перевод
+        if (!out || c.getCurrentChatId?.() !== chatId || hashText(ctx().chat[idx]?.mes) !== src) return false;
+        const text = unmaskProtected(out, parts);
+        m.extra.em_tr = { src, text };
+        m.extra.display_text = text;
+        refreshMessage(idx);
+        await c.saveChat?.();
+        return true;
+    } catch (e) {
+        console.error('[Elephant Memory] translate', e);
+        toast().error(String(e?.cause?.message || e?.message || e), 'Elephant Memory: ошибка перевода');
+        return false;
+    } finally {
+        translating.delete(key);
+    }
+}
+
+/** Переводит сообщение пользователя на язык истории до отправки модели. */
+export async function translateOutgoing(idx) {
+    const s = settings();
+    if (!s.translateEnabled || !s.translateOutgoing) return;
+    const c = ctx();
+    const m = c.chat?.[idx];
+    if (!m || !m.is_user || m.is_system || !hasCyrillic(m.mes)) return;
+    if (typeof m.extra !== 'object' || !m.extra) m.extra = {};
+    const original = m.mes;
+    try {
+        const { masked, parts } = maskProtected(original);
+        const raw = await callModel(s.prompts.translator_system, fillTemplate(s.prompts.translate_input, {
+            glossary: glossaryText(),
+            context: buildContextPairs(c.chat, idx, Number(s.translateContext), names()) || '(none)',
+            internal: s.translateInternal,
+            text: masked,
+        }), 'translator', s.translateMaxTokens);
+        const out = cleanTranslation(raw);
+        if (!out) return;
+        m.mes = unmaskProtected(out, parts);
+        m.extra.display_text = original;
+        m.extra.em_tr = { src: hashText(m.mes), text: original };
+        refreshMessage(idx);
+    } catch (e) {
+        console.error('[Elephant Memory] translate input', e);
+        toast().error('Не удалось перевести ваше сообщение — отправлено как есть.', 'Elephant Memory');
+    }
+}
+
+/** Перевод текста имперсонации в поле ввода на язык пользователя. */
+async function translateImpersonation() {
+    const s = settings();
+    if (!s.translateEnabled || !s.translateImpersonate || !globalThis.jQuery) return;
+    const $ta = globalThis.jQuery('#send_textarea');
+    const text = String($ta.val() ?? '');
+    if (!text.trim() || hasCyrillic(text)) return;
+    const { masked, parts } = maskProtected(text);
+    const raw = await callModel(s.prompts.translator_system, fillTemplate(s.prompts.translate_display, {
+        glossary: glossaryText(),
+        state: getData()?.state || '(none)',
+        context: buildContextPairs(ctx().chat, ctx().chat.length, Number(s.translateContext), names()) || '(none)',
+        speaker: names().user,
+        target: s.translateTarget,
+        text: masked,
+    }), 'translator', s.translateMaxTokens);
+    const out = cleanTranslation(raw);
+    if (out) $ta.val(unmaskProtected(out, parts)).trigger('input');
+}
+
+/** Кнопка 🌐 на сообщении: перевод ⇄ оригинал. */
+export async function toggleTranslation(idx) {
+    const c = ctx();
+    const m = c.chat?.[idx];
+    if (!m) return;
+    if (typeof m.extra !== 'object' || !m.extra) m.extra = {};
+    if (m.extra.display_text) {
+        delete m.extra.display_text;
+        refreshMessage(idx);
+        await c.saveChat?.();
+        return;
+    }
+    if (m.extra.em_tr?.src === hashText(m.mes)) {
+        m.extra.display_text = m.extra.em_tr.text;
+        refreshMessage(idx);
+        await c.saveChat?.();
+        return;
+    }
+    await translateForDisplay(idx, { force: true });
+}
+
+/** После правки или свайпа: подставить сохранённый перевод или перевести заново. */
+export async function syncTranslation(idx) {
+    const s = settings();
+    const c = ctx();
+    const m = c.chat?.[idx];
+    if (!m?.extra?.em_tr && !(s.translateEnabled && s.translateIncoming && !m?.is_user)) return;
+    if (!m || isPlaceholderText(m.mes)) return;
+    if (m.extra?.em_tr?.src === hashText(m.mes)) {
+        if (!m.extra.display_text) {
+            m.extra.display_text = m.extra.em_tr.text;
+            refreshMessage(idx);
+        }
+        return;
+    }
+    // Текст изменился — старый перевод больше не соответствует
+    if (m.extra?.em_tr) {
+        delete m.extra.em_tr;
+        delete m.extra.display_text;
+        refreshMessage(idx);
+    }
+    if (s.translateEnabled && s.translateIncoming && !m.is_user) await translateForDisplay(idx);
+}
+
+function warnBuiltinTranslate() {
+    const mode = ctx().extensionSettings?.translate?.auto_mode;
+    if (settings().translateEnabled && mode && mode !== 'none') {
+        toast().warning('Включён автоперевод встроенного расширения Translate — выключите его (Auto-mode: None), иначе сообщения будут переводиться дважды.', 'Elephant Memory', { timeOut: 20000 });
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Пересказ «где мы остановились»
+// ---------------------------------------------------------------------------
+
+export async function showRecap() {
+    if (!hasChat()) return '';
+    const s = settings();
+    const c = ctx();
+    const data = getData();
+    const chat = c.chat;
+    setStatus('Готовлю пересказ…');
+    try {
+        const text = await callModel(s.prompts.chronicler_system, fillTemplate(s.prompts.recap, {
+            long_term: [...data.arcs, ...data.scenes].map(e => e.text).join('\n\n') || '(none)',
+            state: data.state || '(none)',
+            messages: formatMessages(chat, Math.max(0, chat.length - 6), chat.length, names()) || '(none)',
+            target: s.translateTarget,
+            max_words: s.recapWords,
+        }));
+        if (!text) return '';
+        const html = `<h3>Где мы остановились</h3><div style="text-align:left">${escapeHtml(text).replace(/\n/g, '<br>')}</div>`;
+        if (c.callGenericPopup) await c.callGenericPopup(html, c.POPUP_TYPE?.TEXT ?? 1, '', { wide: true });
+        else toast().info(text, 'Пересказ', { timeOut: 60000 });
+        return text;
+    } catch (e) {
+        console.error('[Elephant Memory] recap', e);
+        toast().error(String(e?.message || e), 'Elephant Memory: пересказ');
+        return '';
+    } finally {
+        setStatus('');
+    }
+}
+
+function lastMessageTime(chat) {
+    for (let i = chat.length - 1; i >= 0; i--) {
+        const m = chat[i];
+        if (!m || m.is_system) continue;
+        const t = Number(m.gen_finished) || Date.parse(m.send_date);
+        if (Number.isFinite(t)) return t;
+    }
+    return NaN;
+}
+
+async function maybeRecapOnOpen() {
+    const s = settings();
+    const hours = Number(s.recapOnOpenHours);
+    if (!hours || !hasChat()) return;
+    const data = getData();
+    const chat = ctx().chat;
+    if (!data || chat.length < 10 || !(data.state || data.scenes.length)) return;
+    const last = lastMessageTime(chat);
+    if (!Number.isFinite(last) || Date.now() - last < hours * 3600e3) return;
+    await showRecap();
 }
 
 // Перехватчик генерации: скрывает из промпта сообщения, уже покрытые сводками.
@@ -643,6 +918,7 @@ export function refreshUI() {
         return;
     }
     $('#em_state, #em_scenes, #em_arcs').prop('disabled', false);
+    if (!$('#em_chat_glossary').is(':focus')) $('#em_chat_glossary').val(data.glossary ?? '');
     if (!$('#em_state').is(':focus')) $('#em_state').val(data.state);
     if (!$('#em_scenes').is(':focus')) $('#em_scenes').val(entriesToText(data.scenes));
     if (!$('#em_arcs').is(':focus')) $('#em_arcs').val(entriesToText(data.arcs));
@@ -744,6 +1020,30 @@ function bindSettings() {
     });
 
     $('#em_update_now').on('click', () => maintain({ forceState: true }));
+    $('#em_recap').on('click', () => showRecap());
+    $('#em_retranslate').on('click', () => {
+        const chat = ctx().chat ?? [];
+        if (chat.length) translateForDisplay(chat.length - 1, { force: true });
+    });
+    $('#em_tr_enabled').on('change', () => warnBuiltinTranslate());
+    if (CMRS?.handleDropdown) {
+        try {
+            CMRS.handleDropdown('#em_translator_profile', s.translatorProfile, (p) => {
+                s.translatorProfile = p?.id ?? '';
+                c.saveSettingsDebounced();
+            });
+        } catch (e) {
+            console.warn('[Elephant Memory] translator dropdown', e);
+        }
+    }
+    let glossaryTimer = null;
+    $('#em_chat_glossary').on('input', function () {
+        const data = getData();
+        if (!data) return;
+        data.glossary = this.value;
+        clearTimeout(glossaryTimer);
+        glossaryTimer = setTimeout(() => saveData(), 600);
+    });
     $('#em_rebuild').on('click', rebuildMemory);
     $('#em_stop').on('click', () => {
         if (busy) {
@@ -797,6 +1097,13 @@ function registerCommands() {
         return '';
     });
     add('em-state', 'Elephant Memory: вернуть текущую карточку состояния.', async () => getData()?.state ?? '');
+    add('em-recap', 'Elephant Memory: краткий пересказ «где мы остановились».', async () => (await showRecap()) || '');
+    add('em-translate', 'Elephant Memory: перевести последнее сообщение заново.', async () => {
+        const chat = ctx().chat ?? [];
+        const idx = chat.length - 1;
+        if (idx >= 0) await translateForDisplay(idx, { force: true });
+        return '';
+    });
 }
 
 async function init() {
@@ -821,20 +1128,62 @@ async function init() {
         applyInjections();
         refreshUI();
         scheduleMaintain();
+        setTimeout(() => maybeRecapOnOpen(), 1500);
+        const s = settings();
+        const chat = ctx().chat ?? [];
+        if (s.translateEnabled && s.translateIncoming && chat.length === 1 && !chat[0].is_user) translateForDisplay(0);
     });
-    ev.on(et.MESSAGE_RECEIVED, async (mesId, type) => {
+
+    // Не ждём здесь служебные вызовы, чтобы не задерживать показ ответа.
+    ev.on(et.MESSAGE_RECEIVED, (mesId, type) => {
         if (type === 'impersonate') return;
-        try {
-            await checkReply(Number(mesId));
-        } catch (e) {
-            console.error('[Elephant Memory] reply check', e);
-        }
-        scheduleMaintain();
-        refreshUI();
+        const idx = Number(mesId);
+        (async () => {
+            let regenerated = false;
+            try {
+                regenerated = await checkReply(idx);
+            } catch (e) {
+                console.error('[Elephant Memory] reply check', e);
+            }
+            const s = settings();
+            if (!regenerated && s.translateEnabled && s.translateIncoming) await translateForDisplay(idx);
+            scheduleMaintain();
+            refreshUI();
+        })();
     });
-    for (const e of [et.MESSAGE_DELETED, et.MESSAGE_EDITED, et.MESSAGE_SWIPED]) {
-        if (e) ev.on(e, () => refreshUI());
+
+    // Сообщение пользователя переводится до сборки промпта — поэтому ждём.
+    const onUserRendered = async (mesId) => {
+        await translateOutgoing(Number(mesId));
+    };
+    if (typeof ev.makeFirst === 'function') ev.makeFirst(et.USER_MESSAGE_RENDERED, onUserRendered);
+    else ev.on(et.USER_MESSAGE_RENDERED, onUserRendered);
+
+    if (et.IMPERSONATE_READY) {
+        ev.on(et.IMPERSONATE_READY, () => translateImpersonation().catch(e => console.error('[Elephant Memory] impersonate', e)));
     }
+    if (et.MESSAGE_SWIPED) ev.on(et.MESSAGE_SWIPED, (mesId) => {
+        refreshUI();
+        syncTranslation(Number(mesId));
+    });
+    for (const e of [et.MESSAGE_EDITED, et.MESSAGE_UPDATED]) {
+        if (e) ev.on(e, (mesId) => {
+            refreshUI();
+            syncTranslation(Number(mesId));
+        });
+    }
+    if (et.MESSAGE_DELETED) ev.on(et.MESSAGE_DELETED, () => refreshUI());
+
+    // Кнопка 🌐 в меню каждого сообщения
+    const $tpl = $('#message_template .extraMesButtons');
+    if ($tpl.length && !$tpl.find('.em_tr_toggle').length) {
+        $tpl.prepend('<div title="Elephant Memory: перевод ⇄ оригинал" class="mes_button em_tr_toggle fa-solid fa-globe"></div>');
+    }
+    $(document).on('click', '.em_tr_toggle', function () {
+        const idx = Number($(this).closest('.mes').attr('mesid'));
+        if (Number.isInteger(idx)) toggleTranslation(idx);
+    });
+    warnBuiltinTranslate();
 
     applyInjections();
     refreshUI();
