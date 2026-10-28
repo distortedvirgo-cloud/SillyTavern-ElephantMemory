@@ -1,0 +1,114 @@
+<div id="elephant_memory_settings" class="elephant-memory">
+    <div class="inline-drawer">
+        <div class="inline-drawer-toggle inline-drawer-header">
+            <b>🐘 Elephant Memory</b>
+            <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
+        </div>
+        <div class="inline-drawer-content">
+
+            <label class="checkbox_label">
+                <input type="checkbox" data-em-key="enabled">
+                <span>Включено</span>
+            </label>
+
+            <div id="em_status" class="em-status"></div>
+            <div id="em_tokens" class="em-status em-muted"></div>
+            <div id="em_busy" class="em-status em-accent"></div>
+
+            <h4>Модели</h4>
+            <label for="em_helper_profile">Служебная модель (летописец) — дешёвая:</label>
+            <select id="em_helper_profile" class="text_pole"></select>
+            <div id="em_profile_warning" class="em-warning">
+                Профиль не выбран — служебные вызовы пойдут через основную (дорогую) модель.
+                Создайте профиль подключения с дешёвой моделью в Connection Manager.
+            </div>
+            <label for="em_critic_profile">Рыбка-критик (пусто = та же служебная):</label>
+            <select id="em_critic_profile" class="text_pole"></select>
+
+            <h4>Память</h4>
+            <div class="em-grid">
+                <label>Окно: последних сообщений целиком
+                    <input type="number" min="4" max="200" class="text_pole" data-em-key="keepRecent">
+                </label>
+                <label>Сжимать блоками по (сообщений)
+                    <input type="number" min="2" max="100" class="text_pole" data-em-key="sceneChunk">
+                </label>
+                <label>Обновлять карточку каждые (сообщений)
+                    <input type="number" min="1" max="100" class="text_pole" data-em-key="stateEvery">
+                </label>
+                <label>Сцен до объединения в главу
+                    <input type="number" min="3" max="100" class="text_pole" data-em-key="scenesBeforeArc">
+                </label>
+                <label>Оставлять последних сцен отдельно
+                    <input type="number" min="1" max="50" class="text_pole" data-em-key="keepScenes">
+                </label>
+                <label>Глубина вставки карточки
+                    <input type="number" min="0" max="50" class="text_pole" data-em-key="stateDepth">
+                </label>
+            </div>
+
+            <h4>Рыбка (проверка свежим взглядом)</h4>
+            <label class="checkbox_label">
+                <input type="checkbox" data-em-key="goldfishState">
+                <span>Проверять и исправлять карточку состояния (+2 дешёвых вызова при обновлении)</span>
+            </label>
+            <label for="em_reply_check">Проверка ответов рассказчика:</label>
+            <select id="em_reply_check" class="text_pole" data-em-key="replyCheck">
+                <option value="off">Выключена</option>
+                <option value="notify">Только предупреждать</option>
+                <option value="auto">Перегенерировать при противоречии</option>
+            </select>
+            <small class="em-muted">Перегенерация — это ещё один вызов дорогой модели. Лимит попыток на сообщение:</small>
+            <input type="number" min="0" max="3" class="text_pole em-narrow" data-em-key="maxRetries">
+            <div id="em_review" class="em-status em-muted"></div>
+            <div id="em_replycheck" class="em-status em-muted"></div>
+
+            <h4>Карточка состояния <small class="em-muted">(можно править)</small></h4>
+            <textarea id="em_state" class="text_pole textarea_compact" rows="8" placeholder="Появится после первых сообщений…"></textarea>
+
+            <details>
+                <summary>Сводки сцен</summary>
+                <textarea id="em_scenes" class="text_pole textarea_compact" rows="8"></textarea>
+            </details>
+            <details>
+                <summary>Главы</summary>
+                <textarea id="em_arcs" class="text_pole textarea_compact" rows="8"></textarea>
+            </details>
+
+            <div class="em-buttons">
+                <div id="em_update_now" class="menu_button">Обновить сейчас</div>
+                <div id="em_rebuild" class="menu_button">Пересобрать память</div>
+                <div id="em_stop" class="menu_button">Стоп</div>
+                <div id="em_clear" class="menu_button redWarningBG">Стереть</div>
+            </div>
+
+            <details>
+                <summary>Продвинутые настройки</summary>
+                <div class="em-grid">
+                    <label>Макс. токенов ответа служебной модели
+                        <input type="number" min="200" max="8000" class="text_pole" data-em-key="helperMaxTokens">
+                    </label>
+                    <label>Слов в карточке
+                        <input type="number" min="100" max="2000" class="text_pole" data-em-key="stateMaxWords">
+                    </label>
+                    <label>Слов в сводке сцены
+                        <input type="number" min="30" max="1000" class="text_pole" data-em-key="sceneMaxWords">
+                    </label>
+                    <label>Слов в сводке главы
+                        <input type="number" min="50" max="2000" class="text_pole" data-em-key="arcMaxWords">
+                    </label>
+                    <label>Блоков за один ход (авто)
+                        <input type="number" min="1" max="20" class="text_pole" data-em-key="maxChunksPerRun">
+                    </label>
+                    <label>Сообщений для карточки, максимум
+                        <input type="number" min="5" max="200" class="text_pole" data-em-key="stateMaxMessages">
+                    </label>
+                </div>
+                <label for="em_prompt_select">Промпт:</label>
+                <select id="em_prompt_select" class="text_pole"></select>
+                <textarea id="em_prompt_text" class="text_pole textarea_compact" rows="10"></textarea>
+                <div id="em_prompt_reset" class="menu_button">Сбросить этот промпт</div>
+            </details>
+        </div>
+    </div>
+</div>

@@ -1,0 +1,60 @@
+.elephant-memory h4 {
+    margin: 12px 0 4px;
+}
+
+.elephant-memory .em-status {
+    font-size: 0.9em;
+    margin: 2px 0;
+}
+
+.elephant-memory .em-status:empty {
+    display: none;
+}
+
+.elephant-memory .em-muted {
+    opacity: 0.75;
+}
+
+.elephant-memory .em-accent {
+    color: var(--SmartThemeQuoteColor);
+}
+
+.elephant-memory .em-warning {
+    font-size: 0.85em;
+    margin: 4px 0 8px;
+    padding: 6px 8px;
+    border-radius: 6px;
+    border: 1px solid var(--warning, #c90);
+}
+
+.elephant-memory .em-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    gap: 6px 10px;
+}
+
+.elephant-memory .em-grid label {
+    display: flex;
+    flex-direction: column;
+    font-size: 0.9em;
+    gap: 2px;
+}
+
+.elephant-memory .em-narrow {
+    max-width: 80px;
+}
+
+.elephant-memory .em-buttons {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    margin: 8px 0;
+}
+
+.elephant-memory details {
+    margin: 6px 0;
+}
+
+.elephant-memory summary {
+    cursor: pointer;
+}
