@@ -154,7 +154,7 @@ export const DEFAULT_SETTINGS = {
     enabled: true,
     helperProfile: '',
     criticProfile: '',
-    helperMaxTokens: 1000,
+    helperMaxTokens: 2500,
     keepRecent: 20,
     sceneChunk: 10,
     stateEvery: 6,
